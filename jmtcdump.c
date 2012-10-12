@@ -14,7 +14,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.  
+ * Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  */
 
@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <ctype.h>
+#include <math.h>
 
 typedef struct {
 	int frame;
@@ -37,8 +38,9 @@ typedef struct {
 } smpte;
 
 /* global Vars */
-smpte tc;
-int full_tc = 0;
+static smpte tc;
+static int full_tc = 0;
+static int have_first_full = 0;
 
 const char MTCTYPE[4][10] = {
 	"24fps",
@@ -47,12 +49,17 @@ const char MTCTYPE[4][10] = {
 	"30fps",
 };
 
+const double expected_tme[4] = {
+	24, 25, 30000.0/1001.0, 30
+};
+
 #define SE(ARG) tc.tick=ARG; full_tc|=1<<(ARG);
 #define SL(ARG) ARG = ( ARG &(~0xf)) | (data&0xf);
 #define SH(ARG) ARG = ( ARG &(~0xf0)) | ((data&0xf)<<4);
 
 /* parse MTC message data */
-void parse_timecode( int data) {
+int parse_timecode( int data) {
+	int rv = 0;
 	switch (data>>4) {
 		case 0x0: // #0000 frame LSN
 			SE(1); SL(tc.frame); break;
@@ -73,14 +80,15 @@ void parse_timecode( int data) {
 			tc.type = (data>>1)&3;
 			if (full_tc!=0xff) break;
 			printf("->- %02i:%02i:%02i.%02i[%s]\n",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type]);
-			full_tc = 0;
-		default: 
+			full_tc = 0; rv = 1; have_first_full = 1;
+		default:
 			;
 	}
+	return rv;
 }
 
 /************************************************
- * jack-midi 
+ * jack-midi
  */
 
 #include <jack/jack.h>
@@ -88,16 +96,30 @@ void parse_timecode( int data) {
 #include <jack/midiport.h>
 
 jack_client_t *jack_midi_client = NULL;
-jack_port_t   *jack_midi_port; 
+jack_port_t   *jack_midi_port;
 
-static unsigned long long tme = 0;
+static int samplerate = 48000;
+static unsigned long long qf_tme = 0;
+static unsigned long long ff_tme = 0;
 static unsigned long long monotonic_cnt = 0;
 
 void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt) {
 	if (ev->size==2 && ev->buffer[0] == 0xf1) {
-		parse_timecode(ev->buffer[1]);
-		printf("QF: %d [%02x %02x ] @%lld dt:%lld\n", tc.tick, ev->buffer[0], ev->buffer[1], mfcnt + ev->time, mfcnt + ev->time - tme);
-		tme = mfcnt + ev->time;
+		printf("QF: %d [%02x %02x ] @%lld dt:%lld\n",
+				tc.tick, ev->buffer[0], ev->buffer[1],
+				mfcnt + ev->time, mfcnt + ev->time - qf_tme);
+		if (parse_timecode(ev->buffer[1])) {
+			long ffdiff = mfcnt + ev->time - ff_tme;
+			long expect = (long) rint(samplerate * 2.0 / expected_tme[tc.type]);
+			if (have_first_full) {
+				printf("->- 8qf delta-time: expected %ld - have %ld %s\n",
+						expect, ffdiff,
+						(abs(ffdiff - expect) > 20.0)?"!!!!!!!!!!!!!":""
+				);
+			}
+			ff_tme = mfcnt + ev->time;
+		}
+		qf_tme = mfcnt + ev->time;
 	}
 }
 
@@ -147,16 +169,16 @@ int jm_midi_open() {
 
   if (jack_midi_port == NULL) {
     fprintf(stderr, "can't register jack-midi-port\n");
-    jm_midi_close(); 
+    jm_midi_close();
     return -1;
   }
 
-	// init smpte
+	samplerate=jack_get_sample_rate (jack_midi_client);
 	tc.type=tc.min=tc.frame=tc.sec=tc.hour=0;
 
   if (jack_activate(jack_midi_client)) {
     fprintf(stderr, "can't activate jack-midi-client\n");
-    jm_midi_close(); 
+    jm_midi_close();
   }
 	return 0;
 }
