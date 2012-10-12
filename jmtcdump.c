@@ -73,6 +73,7 @@ void parse_timecode( int data) {
 			tc.type = (data>>1)&3;
 			if (full_tc!=0xff) break;
 			printf("->- %02i:%02i:%02i.%02i[%s]\n",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type]);
+			full_tc = 0;
 		default: 
 			;
 	}
