@@ -25,6 +25,14 @@
 #include <signal.h>
 #include <ctype.h>
 #include <math.h>
+#include <sys/mman.h>
+
+#include <jack/jack.h>
+#include <jack/transport.h>
+#include <jack/ringbuffer.h>
+#include <jack/midiport.h>
+
+#define RBSIZE 10
 
 typedef struct {
 	int frame;
@@ -32,15 +40,19 @@ typedef struct {
 	int min;
 	int hour;
 
-	int day; // overflow
 	int type;
 	int tick;
-} smpte;
+	unsigned long long int tme;
+} timecode;
 
 /* global Vars */
-static smpte tc;
+static timecode tc;
 static int full_tc = 0;
 static int have_first_full = 0;
+
+static jack_ringbuffer_t *rb = NULL;
+static pthread_mutex_t msg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  data_ready = PTHREAD_COND_INITIALIZER;
 
 const char MTCTYPE[4][10] = {
 	"24fps",
@@ -79,7 +91,9 @@ int parse_timecode( int data) {
 			SE(0);tc.hour= (tc.hour&(~0xf0)) | ((data&1)<<4);
 			tc.type = (data>>1)&3;
 			if (full_tc!=0xff) break;
+#if 0
 			printf("->- %02i:%02i:%02i.%02i[%s]\n",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type]);
+#endif
 			full_tc = 0; rv = 1; have_first_full = 1;
 		default:
 			;
@@ -91,24 +105,23 @@ int parse_timecode( int data) {
  * jack-midi
  */
 
-#include <jack/jack.h>
-#include <jack/transport.h>
-#include <jack/midiport.h>
-
 jack_client_t *jack_midi_client = NULL;
 jack_port_t   *jack_midi_port;
 
 static int samplerate = 48000;
 static unsigned long long qf_tme = 0;
 static unsigned long long ff_tme = 0;
-static unsigned long long monotonic_cnt = 0;
+static volatile unsigned long long monotonic_cnt = 0;
 
 void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt) {
 	if (ev->size==2 && ev->buffer[0] == 0xf1) {
+#if 0 // DEBUG quarter-frames
 		printf("QF: %d [%02x %02x ] @%lld dt:%lld\n",
 				tc.tick, ev->buffer[0], ev->buffer[1],
 				mfcnt + ev->time, mfcnt + ev->time - qf_tme);
+#endif
 		if (parse_timecode(ev->buffer[1])) {
+#if 0 // Warn large delta
 			long ffdiff = mfcnt + ev->time - ff_tme;
 			long expect = (long) rint(samplerate * 2.0 / expected_tme[tc.type]);
 			if (have_first_full) {
@@ -117,7 +130,19 @@ void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt) {
 						(abs(ffdiff - expect) > 20.0)?"!!!!!!!!!!!!!":""
 				);
 			}
+#endif
 			ff_tme = mfcnt + ev->time;
+
+			tc.tme = ff_tme;
+
+			if (jack_ringbuffer_write_space(rb) >= sizeof(timecode)) {
+				jack_ringbuffer_write(rb, (void *) &tc, sizeof(timecode));
+			}
+
+			if (pthread_mutex_trylock (&msg_thread_lock) == 0) {
+				pthread_cond_signal (&data_ready);
+				pthread_mutex_unlock (&msg_thread_lock);
+			}
 		}
 		qf_tme = mfcnt + ev->time;
 	}
@@ -139,6 +164,7 @@ static int jack_midi_process(jack_nframes_t nframes, void *arg) {
 void jack_midi_shutdown(void *arg)
 {
 	jack_midi_client=NULL;
+  pthread_cond_signal (&data_ready);
 	fprintf (stderr, "jack server shutdown\n");
 }
 
@@ -147,6 +173,7 @@ void jm_midi_close(void) {
 		jack_deactivate (jack_midi_client);
 		jack_client_close (jack_midi_client);
   }
+  if (rb) jack_ringbuffer_free(rb);
   jack_midi_client = NULL;
 }
 
@@ -174,7 +201,9 @@ int jm_midi_open() {
   }
 
 	samplerate=jack_get_sample_rate (jack_midi_client);
-	tc.type=tc.min=tc.frame=tc.sec=tc.hour=0;
+	memset(&tc, 0, sizeof(timecode));
+
+	// TODO port-connect
 
   if (jack_activate(jack_midi_client)) {
     fprintf(stderr, "can't activate jack-midi-client\n");
@@ -184,16 +213,41 @@ int jm_midi_open() {
 }
 
 static int run = 1;
-void wearedone(int sig) { run=0; }
+
+void wearedone(int sig) {
+  fprintf(stderr,"caught signal - shutting down.\n");
+	run=0;
+  pthread_cond_signal (&data_ready);
+}
 
 int main (int argc, char ** argv) {
+	// TODO parse args, auto-connect
+	char newline = '\r'; // or '\n';
+
 	if (jm_midi_open()) {
 		return 1;
 	}
+
+  rb = jack_ringbuffer_create(RBSIZE * sizeof(timecode));
+  if (mlockall (MCL_CURRENT | MCL_FUTURE)) {
+    fprintf(stderr, "Warning: Can not lock memory.\n");
+  }
+
 	signal(SIGINT, wearedone);
-	while (run) {
-		sleep (1);
+
+  pthread_mutex_lock (&msg_thread_lock);
+	while (run && jack_midi_client) {
+		int avail_tc = jack_ringbuffer_read_space (rb) / sizeof(timecode);
+		if (avail_tc > 0) {
+			timecode t;
+			jack_ringbuffer_read(rb, (char*) &t, sizeof(timecode));
+			fprintf(stdout, "->- %02i:%02i:%02i.%02i [%s] %lld%c",t.hour,t.min,t.sec,t.frame,MTCTYPE[t.type], t.tme, newline);
+			fflush(stdout);
+		}
+    pthread_cond_wait (&data_ready, &msg_thread_lock);
 	}
+  pthread_mutex_unlock (&msg_thread_lock);
+
 	jm_midi_close();
 	printf("bye\n");
 	return 0;
