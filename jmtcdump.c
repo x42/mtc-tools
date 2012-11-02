@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <ctype.h>
+#include <getopt.h>
 #include <math.h>
 #include <sys/mman.h>
 
@@ -32,7 +33,7 @@
 #include <jack/ringbuffer.h>
 #include <jack/midiport.h>
 
-#define RBSIZE 10
+#define RBSIZE 20
 
 typedef struct {
 	int frame;
@@ -65,11 +66,18 @@ const double expected_tme[4] = {
 	24, 25, 30000.0/1001.0, 30
 };
 
+/* options */
+char newline = '\r'; // or '\n';
+
+
+/************************************************
+ * parse MTC message data
+ */
+
 #define SE(ARG) tc.tick=ARG; full_tc|=1<<(ARG);
 #define SL(ARG) ARG = ( ARG &(~0xf)) | (data&0xf);
 #define SH(ARG) ARG = ( ARG &(~0xf0)) | ((data&0xf)<<4);
 
-/* parse MTC message data */
 int parse_timecode( int data) {
 	int rv = 0;
 	switch (data>>4) {
@@ -105,15 +113,15 @@ int parse_timecode( int data) {
  * jack-midi
  */
 
-jack_client_t *jack_midi_client = NULL;
-jack_port_t   *jack_midi_port;
+jack_client_t *j_client = NULL;
+jack_port_t   *mtc_input_port;
 
-static int samplerate = 48000;
+static uint32_t j_samplerate = 48000;
 static unsigned long long qf_tme = 0;
 static unsigned long long ff_tme = 0;
 static volatile unsigned long long monotonic_cnt = 0;
 
-void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt) {
+static void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt) {
 	if (ev->size==2 && ev->buffer[0] == 0xf1) {
 #if 0 // DEBUG quarter-frames
 		printf("QF: %d [%02x %02x ] @%lld dt:%lld\n",
@@ -123,7 +131,7 @@ void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt) {
 		if (parse_timecode(ev->buffer[1])) {
 #if 0 // Warn large delta
 			long ffdiff = mfcnt + ev->time - ff_tme;
-			long expect = (long) rint(samplerate * 2.0 / expected_tme[tc.type]);
+			long expect = (long) rint(j_samplerate * 2.0 / expected_tme[tc.type]);
 			if (have_first_full) {
 				printf("->- 8qf delta-time: expected %ld - have %ld %s\n",
 						expect, ffdiff,
@@ -148,95 +156,178 @@ void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt) {
 	}
 }
 
-static int jack_midi_process(jack_nframes_t nframes, void *arg) {
-  void *jack_buf = jack_port_get_buffer(jack_midi_port, nframes);
-  int nevents = jack_midi_get_event_count(jack_buf);
-  int n;
-  for (n=0; n<nevents; n++) {
+static int process(jack_nframes_t nframes, void *arg) {
+	void *jack_buf = jack_port_get_buffer(mtc_input_port, nframes);
+	int nevents = jack_midi_get_event_count(jack_buf);
+	int n;
+	for (n=0; n<nevents; n++) {
 		jack_midi_event_t ev;
-    jack_midi_event_get(&ev, jack_buf, n);
+		jack_midi_event_get(&ev, jack_buf, n);
 		process_jmidi_event(&ev, monotonic_cnt);
-  }
+	}
 	monotonic_cnt += nframes;
-  return 0;
+	return 0;
 }
 
-void jack_midi_shutdown(void *arg)
-{
-	jack_midi_client=NULL;
-  pthread_cond_signal (&data_ready);
+void jack_shutdown(void *arg) {
+	j_client=NULL;
+	pthread_cond_signal (&data_ready);
 	fprintf (stderr, "jack server shutdown\n");
 }
 
-void jm_midi_close(void) {
-	if (jack_midi_client) {
-		jack_deactivate (jack_midi_client);
-		jack_client_close (jack_midi_client);
-  }
-  if (rb) jack_ringbuffer_free(rb);
-  jack_midi_client = NULL;
+void cleanup(void) {
+	if (j_client) {
+		jack_deactivate (j_client);
+		jack_client_close (j_client);
+	}
+	if (rb) {
+		jack_ringbuffer_free(rb);
+	}
+	j_client = NULL;
 }
 
-int jm_midi_open() {
-	if (jack_midi_client) {
-		fprintf (stderr, "xjadeo is already connected to jack-midi.\n");
-		return -1;
-  }
 
-	jack_midi_client = jack_client_open ("jmtcdump", JackNullOption, NULL);
+/**
+ * open a client connection to the JACK server
+ */
+static int init_jack(const char *client_name) {
+	jack_status_t status;
+	j_client = jack_client_open (client_name, JackNullOption, &status);
+	if (j_client == NULL) {
+		fprintf (stderr, "jack_client_open() failed, status = 0x%2.0x\n", status);
+		if (status & JackServerFailed) {
+			fprintf (stderr, "Unable to connect to JACK server\n");
+		}
+		return (-1);
+	}
+	if (status & JackServerStarted) {
+		fprintf (stderr, "JACK server started\n");
+	}
+	if (status & JackNameNotUnique) {
+		client_name = jack_get_client_name(j_client);
+		fprintf (stderr, "jack-client name: `%s'\n", client_name);
+	}
+	jack_set_process_callback (j_client, process, 0);
 
-	if (!jack_midi_client) {
-		fprintf(stderr, "could not connect to jack server.\n");
-    return -1 ;
-  }
+#ifndef WIN32
+	jack_on_shutdown (j_client, jack_shutdown, NULL);
+#endif
+	j_samplerate=jack_get_sample_rate (j_client);
 
-  jack_on_shutdown (jack_midi_client, jack_midi_shutdown, 0);
-  jack_set_process_callback(jack_midi_client, jack_midi_process, NULL);
-  jack_midi_port = jack_port_register(jack_midi_client, "MTC in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput , 0);
+	return (0);
+}
 
-  if (jack_midi_port == NULL) {
-    fprintf(stderr, "can't register jack-midi-port\n");
-    jm_midi_close();
-    return -1;
-  }
+static int jack_portsetup(void) {
+	if ((mtc_input_port = jack_port_register(j_client, "mtc_in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0)) == 0) {
+		fprintf (stderr, "cannot register mtc input port !\n");
+		return (-1);
+	}
+	return (0);
+}
 
-	samplerate=jack_get_sample_rate (jack_midi_client);
-	memset(&tc, 0, sizeof(timecode));
+static void port_connect(char *mtc_port) {
+	if (mtc_port && jack_connect(j_client, mtc_port, jack_port_name(mtc_input_port))) {
+		fprintf(stderr, "cannot connect port %s to %s\n", mtc_port, jack_port_name(mtc_input_port));
+	}
+}
 
-	// TODO port-connect
 
-  if (jack_activate(jack_midi_client)) {
-    fprintf(stderr, "can't activate jack-midi-client\n");
-    jm_midi_close();
-  }
-	return 0;
+/**************************
+ * main application code
+ */
+
+static struct option const long_options[] =
+{
+  {"help", no_argument, 0, 'h'},
+  {"newline", no_argument, 0, 'n'},
+  {"version", no_argument, 0, 'V'},
+  {NULL, 0, NULL, 0}
+};
+
+static void usage (int status) {
+  printf ("jmtcdump - JACK MIDI Timecode dump.\n\n");
+  printf ("Usage: jmtcdump [ OPTIONS ] [JACK-port]\n\n");
+  printf ("Options:\n\
+  -h, --help                 display this help and exit\n\
+  -n, --newline              print a newline after each Timecode\n\
+  -V, --version              print version information and exit\n\
+\n");
+  printf ("\n\
+This tool subscribes to a JACK Midi Port and prints received Midi\n\
+time code to stdout.\n\
+\n");
+  printf ("Report bugs to Robin Gareus <robin@gareus.org>\n"
+          "Website and manual: <https://github.com/x42/mtc-tools>\n"
+	  );
+  exit (status);
+}
+
+static int decode_switches (int argc, char **argv) {
+	int c;
+
+	while ((c = getopt_long (argc, argv,
+			   "h"	/* help */
+			   "n"	/* newline */
+			   "V",	/* version */
+			   long_options, (int *) 0)) != EOF) {
+		switch (c) {
+			case 'n':
+				newline = '\n';
+				break;
+			case 'V':
+				printf ("jmtcdump version %s\n\n", VERSION);
+				printf ("Copyright (C) GPL 2012 Robin Gareus <robin@gareus.org>\n");
+				exit (0);
+
+			case 'h':
+				usage (0);
+
+			default:
+			  usage (EXIT_FAILURE);
+		}
+	}
+	return optind;
 }
 
 static int run = 1;
 
 void wearedone(int sig) {
-  fprintf(stderr,"caught signal - shutting down.\n");
+	fprintf(stderr,"caught signal - shutting down.\n");
 	run=0;
-  pthread_cond_signal (&data_ready);
+	pthread_cond_signal (&data_ready);
 }
 
 int main (int argc, char ** argv) {
-	// TODO parse args, auto-connect
-	char newline = '\r'; // or '\n';
+	decode_switches (argc, argv);
 
-	if (jm_midi_open()) {
-		return 1;
+	if (init_jack("jmtcdump"))
+		goto out;
+	if (jack_portsetup())
+		goto out;
+
+	memset(&tc, 0, sizeof(timecode));
+	rb = jack_ringbuffer_create(RBSIZE * sizeof(timecode));
+
+	if (mlockall (MCL_CURRENT | MCL_FUTURE)) {
+		fprintf(stderr, "Warning: Can not lock memory.\n");
 	}
 
-  rb = jack_ringbuffer_create(RBSIZE * sizeof(timecode));
-  if (mlockall (MCL_CURRENT | MCL_FUTURE)) {
-    fprintf(stderr, "Warning: Can not lock memory.\n");
-  }
+	// -=-=-= RUN =-=-=-
 
+	if (jack_activate (j_client)) {
+		fprintf (stderr, "cannot activate client.\n");
+		goto out;
+	}
+
+	while (optind < argc)
+		port_connect(argv[optind++]);
+
+#ifndef _WIN32
 	signal(SIGINT, wearedone);
+#endif
 
-  pthread_mutex_lock (&msg_thread_lock);
-	while (run && jack_midi_client) {
+	pthread_mutex_lock (&msg_thread_lock);
+	while (run && j_client) {
 		int avail_tc = jack_ringbuffer_read_space (rb) / sizeof(timecode);
 		if (avail_tc > 0) {
 			timecode t;
@@ -244,11 +335,11 @@ int main (int argc, char ** argv) {
 			fprintf(stdout, "->- %02i:%02i:%02i.%02i [%s] %lld%c",t.hour,t.min,t.sec,t.frame,MTCTYPE[t.type], t.tme, newline);
 			fflush(stdout);
 		}
-    pthread_cond_wait (&data_ready, &msg_thread_lock);
+		pthread_cond_wait (&data_ready, &msg_thread_lock);
 	}
-  pthread_mutex_unlock (&msg_thread_lock);
+	pthread_mutex_unlock (&msg_thread_lock);
 
-	jm_midi_close();
-	printf("bye\n");
+out:
+	cleanup();
 	return 0;
 }
