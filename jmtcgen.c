@@ -1,5 +1,6 @@
-/* jack linear time code to MIDI time code translator
- * Copyright (C) 2006, 20120, 2012 Robin Gareus <robin@gareus.org>
+/* JACK-Transport MTC generator
+ *
+ * Copyright (C) 2006, 2012 Robin Gareus <robin@gareus.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,7 +16,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//#define _GNU_SOURCE
 #define JACK_MIDI_QUEUE_SIZE (256)
 
 #ifdef WIN32
@@ -43,7 +43,6 @@
 #endif
 
 static jack_port_t *mtc_output_port = NULL;
-
 static jack_client_t *j_client = NULL;
 static jack_nframes_t jmtc_latency = 0;
 static uint32_t j_samplerate = 48000;
@@ -224,11 +223,11 @@ static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode
     return;
   }
 
-  if (   nfn - ofn > 3 
+  if (   nfn - ofn > 3
       || mfcnt - pfcnt > 3 * fptcf
       || (nfn - ofn < 1 && mode != 2)
       ) {
-#if 0 // DEBUG 
+#if 0 // DEBUG
     char tcs[12];
     timecode_time_to_string(tcs, t);
     printf(" !! RESET %s | pf: %lld nf: %lld\n", tcs, ofn, nfn);
@@ -276,13 +275,13 @@ static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode
       default:
 	if (!fps_warn) {
 	  fps_warn = 1;
-	  fprintf(stderr, "WARNING: invalid framerate %.2f (using 25fps instead) - expect sync problems\n", 
+	  fprintf(stderr, "WARNING: invalid framerate %.2f (using 25fps instead) - expect sync problems\n",
 	      timecode_rate_to_double(&framerate));
 	}
 	break;
     }
 
-#if 0 // DEBUG 
+#if 0 // DEBUG
   char tcs[12];
   timecode_time_to_string(tcs, t);
   printf("%d -> %s.%d %f %lld\n", mode, tcs, t->subframe, fptcf, cfcnt);
@@ -386,7 +385,7 @@ int process (jack_nframes_t nframes, void *arg) {
       event_queue[queued_events_end].time = mt - monotonic_fcnt;
 #if 0 // DEBUG dump Events & Timing
       printf("QF:%02x abs: %lld rel:%u @%lld\n",
-	  event_queue[queued_events_end].buffer[1], mt, 
+	  event_queue[queued_events_end].buffer[1], mt,
 	  event_queue[queued_events_end].time, monotonic_fcnt);
 #endif
       jack_midi_event_write(out,
@@ -532,7 +531,6 @@ static int decode_switches (int argc, char **argv) {
 			   "d"	/* debug */
 			   "f:"	/* fps */
 			   "h"	/* help */
-			   "m:"	/* mtcport */
 			   "V",	/* version */
 			   long_options, (int *) 0)) != EOF)
     {
@@ -590,7 +588,7 @@ int main (int argc, char **argv) {
     goto out;
   }
 
-  while (optind < argc) 
+  while (optind < argc)
     port_connect(argv[optind++]);
 
 #ifndef _WIN32
