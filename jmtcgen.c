@@ -25,6 +25,7 @@
 #endif
 
 #include <stdio.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -33,6 +34,7 @@
 #include <time.h>
 #include <getopt.h>
 #include <jack/jack.h>
+#include <jack/ringbuffer.h>
 #include <jack/midiport.h>
 #include <sys/mman.h>
 #include <timecode/timecode.h>
@@ -48,6 +50,10 @@ static jack_nframes_t jmtc_latency = 0;
 static uint32_t j_samplerate = 48000;
 static volatile long long int monotonic_fcnt = 0;
 static int decodeahead = 1;
+
+static jack_ringbuffer_t *rb = NULL;
+static pthread_mutex_t msg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  data_ready = PTHREAD_COND_INITIALIZER;
 
 /* options */
 static int debug = 0;
@@ -73,6 +79,20 @@ static int queued_events_start = 0;
 static int queued_events_end = 0;
 void jack_latency_cb(jack_latency_callback_mode_t mode, void *arg);
 
+
+static void rbprintf(const char *fmt, ...) {
+  char buf[BUFSIZ];
+  int n;
+  va_list ap;
+  va_start(ap, fmt);
+  n = vsnprintf(buf, BUFSIZ, fmt, ap);
+  va_end(ap);
+  if (jack_ringbuffer_write_space(rb) >=n){
+    jack_ringbuffer_write(rb, buf, n);
+  }
+  pthread_cond_signal (&data_ready);
+}
+
 /**
  * cleanup and exit
  * call this function only _after_ everything has been initialized!
@@ -81,6 +101,9 @@ static void cleanup(int sig) {
   if (j_client) {
     jack_client_close (j_client);
     j_client=NULL;
+  }
+  if (rb) {
+    jack_ringbuffer_free(rb);
   }
   fprintf(stderr, "bye.\n");
 }
@@ -118,14 +141,14 @@ static void queue_mtc_quarterframes(const TimecodeTime * const t, const int mtc_
 
   if (next_quarter_frame_to_send != 0 && next_quarter_frame_to_send != 4) {
     /* this can actually never happen */
-    fprintf(stderr, "quarter-frame mis-aligment: %d (should be 0 or 4)\n", next_quarter_frame_to_send);
+    rbprintf("quarter-frame mis-aligment: %d (should be 0 or 4)\n", next_quarter_frame_to_send);
     next_quarter_frame_to_send = 0;
   }
   if (mtc_tc != 0x20 && (t->frame%2) == 1 && next_quarter_frame_to_send == 0) {
     /* the MTC spec does note that for 24, 30 drop and 30 non-drop, the frame number computed from quarter frames is always even
      * but for 25 it might be odd or even "depending on whiuch frame number the 8 message sequence started"
      */
-    fprintf(stderr, "re-align quarter-frame to even frame-number\n");
+    rbprintf("re-align quarter-frame to even frame-number\n");
     return;
   }
 
@@ -277,7 +300,7 @@ static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode
       default:
 	if (!fps_warn) {
 	  fps_warn = 1;
-	  fprintf(stderr, "WARNING: invalid framerate %.2f (using 25fps instead) - expect sync problems\n",
+	  rbprintf("WARNING: invalid framerate %.2f (using 25fps instead) - expect sync problems\n",
 	      timecode_rate_to_double(&framerate));
 	}
 	break;
@@ -322,7 +345,7 @@ int process (jack_nframes_t nframes, void *arg) {
     static float audio_frames_per_video_frame = 0;
     if (pos.audio_frames_per_video_frame != audio_frames_per_video_frame) {
       audio_frames_per_video_frame = pos.audio_frames_per_video_frame;
-      printf("new APV: %.2f\n", pos.audio_frames_per_video_frame);
+      rbprintf("new APV: %.2f\n", pos.audio_frames_per_video_frame);
       switch ((int)floor(j_samplerate/audio_frames_per_video_frame)) {
 	case 24:
 	  framerate.num=24; framerate.den=1; framerate.drop=0;
@@ -337,11 +360,11 @@ int process (jack_nframes_t nframes, void *arg) {
 	  framerate.num=30; framerate.den=1; framerate.drop=0;
 	  break;
 	default:
-	  printf("invalid framerate.\n"); // XXX
+	  rbprintf("invalid framerate.\n");
 	  break;
       }
       // TODO use timecode_strftimecode()
-      printf("FPS changed to %.2f%s\n", timecode_rate_to_double(&framerate), framerate.drop?"df":""); // XXX
+      rbprintf("FPS changed to %.2f%s\n", timecode_rate_to_double(&framerate), framerate.drop?"df":"");
       framerate.subframes = timecode_frames_per_timecode_frame(&framerate, j_samplerate);
       decodeahead = 1 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
     }
@@ -389,8 +412,8 @@ int process (jack_nframes_t nframes, void *arg) {
       break;
     }
     if (mt < monotonic_fcnt) {
-      fprintf(stderr, "WARNING: MTC was for previous jack cycle (port latency too large?)\n"); // XXX
-      if (debug) fprintf(stderr, "TME: %lld < %lld)\n", mt, monotonic_fcnt); // XXX
+      rbprintf("WARNING: MTC was for previous jack cycle (port latency too large?)\n");
+      //fprintf(stderr, "TME: %lld < %lld)\n", mt, monotonic_fcnt); // XXX
     } else {
 
 #if 0 // DEBUG quarter frame timing
@@ -454,6 +477,7 @@ void jack_latency_cb(jack_latency_callback_mode_t mode, void *arg) {
 void jack_shutdown (void *arg) {
   fprintf(stderr,"recv. shutdown request from jackd.\n");
   client_state=Exit;
+  pthread_cond_signal (&data_ready);
 }
 
 /**
@@ -508,6 +532,7 @@ void catchsig (int sig) {
 #endif
   fprintf(stderr,"caught signal - shutting down.\n");
   client_state=Exit;
+  pthread_cond_signal (&data_ready);
 }
 
 /**************************
@@ -602,6 +627,8 @@ int main (int argc, char **argv) {
   if (jack_portsetup())
     goto out;
 
+  rb = jack_ringbuffer_create(4096 * sizeof(char));
+
   if (mlockall (MCL_CURRENT | MCL_FUTURE)) {
     fprintf(stderr, "Warning: Can not lock memory.\n");
   }
@@ -624,9 +651,17 @@ int main (int argc, char **argv) {
 
   // -=-=-= JACK DOES ALL THE WORK =-=-=-
 
+  pthread_mutex_lock (&msg_thread_lock);
   while (client_state != Exit) {
-    sleep(1);
+    while(jack_ringbuffer_read_space (rb) > 0) {
+      char x;
+      jack_ringbuffer_read(rb, (char*) &x, sizeof(char));
+      fputc(x, stdout);
+    }
+    fflush(stdout);
+    pthread_cond_wait (&data_ready, &msg_thread_lock);
   }
+  pthread_mutex_unlock (&msg_thread_lock);
 
   // -=-=-= CLEANUP =-=-=-
 
