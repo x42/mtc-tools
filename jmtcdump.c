@@ -18,15 +18,24 @@
  *
  */
 
+#ifdef WIN32
+#include <windows.h>
+#include <pthread.h>
+#define pthread_t //< override jack.h def
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <signal.h>
-#include <ctype.h>
 #include <getopt.h>
 #include <math.h>
 #include <sys/mman.h>
+
+#ifndef WIN32
+#include <signal.h>
+#include <pthread.h>
+#endif
 
 #include <jack/jack.h>
 #include <jack/transport.h>
