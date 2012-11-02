@@ -77,7 +77,7 @@ typedef struct my_midi_event {
 static my_midi_event_t event_queue[JACK_MIDI_QUEUE_SIZE];
 static int queued_events_start = 0;
 static int queued_events_end = 0;
-void jack_latency_cb(jack_latency_callback_mode_t mode, void *arg);
+int jack_graph_cb(void *arg);
 
 
 static void rbprintf(const char *fmt, ...) {
@@ -401,7 +401,7 @@ int process (jack_nframes_t nframes, void *arg) {
   out = jack_port_get_buffer(mtc_output_port, nframes);
 
 #if 0 // workaround jack2 latency cb order - fixed in jack2 e577581de (2012-10-30)
-  jack_latency_cb(JackPlaybackLatency, out);
+  jack_graph_cb(out);
 #endif
 
   jack_midi_clear_buffer(out);
@@ -464,14 +464,14 @@ int max_latency(jack_port_t *port, jack_latency_callback_mode_t mode) {
   return max_lat;
 }
 
-void jack_latency_cb(jack_latency_callback_mode_t mode, void *arg) {
-  return ;
+int jack_graph_cb(void *arg) {
   if (mtc_output_port) {
     jmtc_latency = max_latency(mtc_output_port, JackCaptureLatency);
     if (debug && !arg)
-      fprintf(stderr, "MTC port latency: %d\n", jmtc_latency);
+      rbprintf("MTC port latency: %d\n", jmtc_latency);
   }
   decodeahead = 1 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
+  return 0;
 }
 
 void jack_shutdown (void *arg) {
@@ -502,7 +502,7 @@ static int init_jack(const char *client_name) {
   }
   jack_set_process_callback (j_client, process, 0);
 
-  jack_set_latency_callback (j_client, jack_latency_cb, NULL);
+  jack_set_graph_order_callback (j_client, jack_graph_cb, NULL);
 
 #ifndef WIN32
   jack_on_shutdown (j_client, jack_shutdown, NULL);
