@@ -49,8 +49,10 @@ static uint32_t j_samplerate = 48000;
 static volatile long long int monotonic_fcnt = 0;
 static int decodeahead = 1;
 
+/* options */
 static int debug = 0;
-TimecodeRate framerate = { 25, 1, 0, 80 };
+static TimecodeRate framerate = { 25, 1, 0, 80 };
+static int use_jack_fps = 0;
 
 /* a simple state machine for this client */
 static volatile enum {
@@ -316,13 +318,30 @@ int process (jack_nframes_t nframes, void *arg) {
   state = jack_transport_query (j_client, &pos);
   sample_pos = pos.frame;
 
-  if (pos.valid & JackAudioVideoRatio) {
-    // pos.audio_frames_per_video_frame;
-    //
-    // TODO: check if it matches 'framerate'
-    // warn once, or update 'framerate'
-    if (0) {
-      // when fps changes:
+  if (use_jack_fps && pos.valid & JackAudioVideoRatio) {
+    static float audio_frames_per_video_frame = 0;
+    if (pos.audio_frames_per_video_frame != audio_frames_per_video_frame) {
+      audio_frames_per_video_frame = pos.audio_frames_per_video_frame;
+      printf("new APV: %.2f\n", pos.audio_frames_per_video_frame);
+      switch ((int)floor(j_samplerate/audio_frames_per_video_frame)) {
+	case 24:
+	  framerate.num=24; framerate.den=1; framerate.drop=0;
+	  break;
+	case 25:
+	  framerate.num=25; framerate.den=1; framerate.drop=0;
+	  break;
+	case 29:
+	  framerate.num=30000; framerate.den=1001; framerate.drop=1;
+	  break;
+	case 30:
+	  framerate.num=30; framerate.den=1; framerate.drop=0;
+	  break;
+	default:
+	  printf("invalid framerate.\n"); // XXX
+	  break;
+      }
+      // TODO use timecode_strftimecode()
+      printf("FPS changed to %.2f%s\n", timecode_rate_to_double(&framerate), framerate.drop?"df":""); // XXX
       framerate.subframes = timecode_frames_per_timecode_frame(&framerate, j_samplerate);
       decodeahead = 1 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
     }
@@ -498,6 +517,7 @@ void catchsig (int sig) {
 static struct option const long_options[] =
 {
   {"help", no_argument, 0, 'h'},
+  {"jackvideo", no_argument, 0, 'F'},
   {"fps", required_argument, 0, 'f'},
   {"version", no_argument, 0, 'V'},
   {NULL, 0, NULL, 0}
@@ -508,6 +528,7 @@ static void usage (int status) {
   printf ("Usage: jmtcgen [ OPTIONS ] [JACK-port]*\n\n");
   printf ("Options:\n\
   -f, --fps <num>[/den]      set MTC framerate (default 25/1)\n\
+  -F, --jackvideo            use jack-transport's FPS setting if available\n\
   -h, --help                 display this help and exit\n\
   -V, --version              print version information and exit\n\
 \n");
@@ -529,6 +550,7 @@ static int decode_switches (int argc, char **argv) {
 
   while ((c = getopt_long (argc, argv,
 			   "d"	/* debug */
+			   "F"	/* jack_video */
 			   "f:"	/* fps */
 			   "h"	/* help */
 			   "V",	/* version */
@@ -539,6 +561,10 @@ static int decode_switches (int argc, char **argv) {
 
 	case 'd':
 	  debug = 1;
+	  break;
+
+	case 'F':
+	  use_jack_fps = 1;
 	  break;
 
 	case 'f':
