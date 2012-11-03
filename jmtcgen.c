@@ -387,7 +387,9 @@ int process (jack_nframes_t nframes, void *arg) {
       generate_mtc(&t, monotonic_fcnt, 0);
       break;
     case JackTransportStarting:
+#if 0 // jack2 only
     case JackTransportNetStarting:
+#endif
       //send sysex-MTC message
       generate_mtc(&t, monotonic_fcnt, 1);
       break;
