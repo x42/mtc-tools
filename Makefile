@@ -51,7 +51,7 @@ install-man:
 	install -m644 jmtcdump.1 $(DESTDIR)$(mandir)
 
 uninstall-man:
-	rm -f $(DESTDIR)$(mandir)/jltcdump.1
+	rm -f $(DESTDIR)$(mandir)/jmtcgen.1
 	rm -f $(DESTDIR)$(mandir)/jmtcdump.1
 	-rmdir $(DESTDIR)$(mandir)
 
