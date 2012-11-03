@@ -49,7 +49,7 @@ static jack_client_t *j_client = NULL;
 static jack_nframes_t jmtc_latency = 0;
 static uint32_t j_samplerate = 48000;
 static volatile long long int monotonic_fcnt = 0;
-static int decodeahead = 1;
+static int decodeahead = 2;
 
 static jack_ringbuffer_t *rb = NULL;
 static pthread_mutex_t msg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -269,7 +269,7 @@ static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode
   }
 
   if (mode == 2) {
-    cfcnt += fptcf * (1 + ofn - nfn);
+    cfcnt += fptcf * (ofn - nfn);
   }
 
 #if 0 // DEBUG
@@ -313,6 +313,7 @@ static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode
 #endif
 
     if (mode != 2) {
+      if (debug) rbprintf("sending sysex locate.\n");
       queued_events_end = queued_events_start; // flush queue
       queue_mtc_sysex(&stime, mtc_tc, mfcnt);
       memcpy(&stime, t, sizeof(TimecodeTime));
@@ -366,7 +367,7 @@ int process (jack_nframes_t nframes, void *arg) {
       // TODO use timecode_strftimecode()
       rbprintf("FPS changed to %.2f%s\n", timecode_rate_to_double(&framerate), framerate.drop?"df":"");
       framerate.subframes = timecode_frames_per_timecode_frame(&framerate, j_samplerate);
-      decodeahead = 1 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
+      decodeahead = 2 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
     }
   }
 
@@ -412,7 +413,7 @@ int process (jack_nframes_t nframes, void *arg) {
       break;
     }
     if (mt < monotonic_fcnt) {
-      rbprintf("WARNING: MTC was for previous jack cycle (port latency too large?)\n");
+      if (debug) rbprintf("WARNING: MTC was for previous jack cycle (port latency too large?)\n");
       //fprintf(stderr, "TME: %lld < %lld)\n", mt, monotonic_fcnt); // XXX
     } else {
 
@@ -470,7 +471,7 @@ int jack_graph_cb(void *arg) {
     if (debug && !arg)
       rbprintf("MTC port latency: %d\n", jmtc_latency);
   }
-  decodeahead = 1 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
+  decodeahead = 2 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
   return 0;
 }
 
