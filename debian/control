@@ -1,0 +1,19 @@
+Source: mtc-tools
+Section: sound
+Priority: optional
+Maintainer: Robin Gareus <robin@gareus.org>
+Build-Depends: debhelper (>= 9.0.0), 
+ libjack-dev | libjack-jackd2-dev,
+ libtimecode-dev
+Homepage: https://github.com/x42/mtc-tools
+Standards-Version: 3.9.3
+
+Package: mtc-tools
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: commandline tools to deal with MIDI-timecode (MTC)
+ This package currently features 2 tools:
+ .
+ jmtcgen: a MTC generator, encoding jack transport time
+ .
+ jmtcdump: a MTC parser for jack-midi ports
