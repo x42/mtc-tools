@@ -62,7 +62,7 @@ static int have_first_full = 0;
 
 static jack_ringbuffer_t *rb = NULL;
 static pthread_mutex_t msg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  data_ready = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t data_ready = PTHREAD_COND_INITIALIZER;
 
 const char MTCTYPE[4][10] = {
 	"24fps",
@@ -149,9 +149,10 @@ static void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt)
 			}
 #endif
 			ff_tme = mfcnt + ev->time;
-
 			tc.tme = ff_tme;
-
+#ifdef DEBUG_JACK_SYNC
+			fprintf(stdout, "->- %02i:%02i:%02i.%02i [%s] %lld\n",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type], tc.tme);
+#else
 			if (jack_ringbuffer_write_space(rb) >= sizeof(timecode)) {
 				jack_ringbuffer_write(rb, (void *) &tc, sizeof(timecode));
 			}
@@ -160,6 +161,7 @@ static void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt)
 				pthread_cond_signal (&data_ready);
 				pthread_mutex_unlock (&msg_thread_lock);
 			}
+#endif
 		}
 		qf_tme = mfcnt + ev->time;
 	}
@@ -169,10 +171,21 @@ static int process(jack_nframes_t nframes, void *arg) {
 	void *jack_buf = jack_port_get_buffer(mtc_input_port, nframes);
 	int nevents = jack_midi_get_event_count(jack_buf);
 	int n;
+
+#ifdef DEBUG_JACK_SYNC
+	jack_position_t pos;
+	jack_transport_query (j_client, &pos);
+	printf( "%u\n",  pos.frame);
+#endif
+
 	for (n=0; n<nevents; n++) {
 		jack_midi_event_t ev;
 		jack_midi_event_get(&ev, jack_buf, n);
+#ifdef DEBUG_JACK_SYNC
+		process_jmidi_event(&ev, pos.frame);
+#else
 		process_jmidi_event(&ev, monotonic_cnt);
+#endif
 	}
 	monotonic_cnt += nframes;
 	return 0;
