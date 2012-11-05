@@ -1,6 +1,7 @@
 PREFIX ?= /usr/local
 bindir = $(PREFIX)/bin
 mandir = $(PREFIX)/share/man/man1
+CFLAGS ?= -Wall -g -O2
 
 VERSION=0.1.0
 
@@ -11,7 +12,7 @@ ifeq ($(shell pkg-config --exists timecode || echo no), no)
   $(error "libtimcode is required - install https://github.com/x42/libtimecode")
 endif
 
-CFLAGS+=`pkg-config --cflags jack timecode` -DVERSION=\"$(VERSION)\" -Wall -g
+CFLAGS+=`pkg-config --cflags jack timecode` -DVERSION=\"$(VERSION)\"
 LOADLIBES=`pkg-config --libs jack timecode` -lm
 
 all: jmtcgen jmtcdump
