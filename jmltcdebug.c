@@ -43,6 +43,7 @@
 #include <jack/midiport.h>
 
 #include <ltc.h>
+#include <timecode/timecode.h>
 #define LTC_QUEUE_LEN (42)
 
 #define RBSIZE (20)
@@ -79,6 +80,13 @@ const char MTCTYPE[4][10] = {
 
 const double expected_tme[4] = {
 	24, 25, 30000.0/1001.0, 30
+};
+
+const TimecodeRate *mtctc[4] = {
+	TCFPS24,
+	TCFPS25,
+	TCFPS2997DF,
+	TCFPS30
 };
 
 /* options */
@@ -187,7 +195,10 @@ static void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt)
 			ff_tme = mfcnt + ev->time;
 			tc.tme = ff_tme - rint(j_samplerate / expected_tme[tc.type] * 7.0 / 4.0); // 7 quarter-frames
 #ifdef DEBUG_JACK_SYNC
-			fprintf(stdout, "->- %02i:%02i:%02i.%02i [%s] %lld\n",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type], tc.tme);
+			fprintf(stdout, "->- %02i:%02i:%02i.%02i [%s] %lld",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type], tc.tme);
+			TimecodeTime tj;
+			timecode_sample_to_time(&tj, mtctc[tc.type], j_samplerate, tc.tme);
+			fprintf(stdout, " == %02i:%02i:%02i.%02i.%03d\n",tj.hour,tj.minute,tj.second,tj.frame, tj.subframe);
 #else
 			if (jack_ringbuffer_write_space(rb) >= sizeof(timecode)) {
 				jack_ringbuffer_write(rb, (void *) &tc, sizeof(timecode));
@@ -225,8 +236,9 @@ static int process(jack_nframes_t nframes, void *arg) {
 #ifdef DEBUG_JACK_SYNC
 	jack_position_t pos;
 	jack_transport_query (j_client, &pos);
-	printf( "%u\n",  pos.frame);
-#endif
+	//printf( "%u\n",  pos.frame);
+
+#else
 
   in = jack_port_get_buffer (ltc_input_port1, nframes);
   parse_ltc(decoder, nframes, in, monotonic_cnt - j_latency1);
@@ -235,7 +247,7 @@ static int process(jack_nframes_t nframes, void *arg) {
   in = jack_port_get_buffer (ltc_input_port2, nframes);
   parse_ltc(decoder2, nframes, in, monotonic_cnt - j_latency2);
 	dequeue_ltc(decoder2, 2);
-
+#endif
 
 	for (n=0; n<nevents; n++) {
 		jack_midi_event_t ev;

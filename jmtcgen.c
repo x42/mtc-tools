@@ -429,9 +429,10 @@ int process (jack_nframes_t nframes, void *arg) {
 
       event_queue[queued_events_end].time = mt - monotonic_fcnt;
 #if 0 // DEBUG dump Events & Timing
-      printf("QF:%02x abs: %lld rel:%u @%lld\n",
+      printf("QF:%02x abs: %"PRId64" rel:%4u @%"PRId64" jt:%"PRId64"\n",
 	  event_queue[queued_events_end].buffer[1], mt,
-	  event_queue[queued_events_end].time, monotonic_fcnt);
+	  event_queue[queued_events_end].time, monotonic_fcnt,
+	  (int64_t) (sample_pos + event_queue[queued_events_end].time));
 #endif
       jack_midi_event_write(out,
 	  event_queue[queued_events_end].time,
