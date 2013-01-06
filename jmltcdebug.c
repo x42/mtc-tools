@@ -185,7 +185,7 @@ static void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt)
 			}
 #endif
 			ff_tme = mfcnt + ev->time;
-			tc.tme = ff_tme - rint(j_samplerate / expected_tme[tc.type] * 7.0 / 8.0); // 7 quarter-frames
+			tc.tme = ff_tme - rint(j_samplerate / expected_tme[tc.type] * 7.0 / 4.0); // 7 quarter-frames
 #ifdef DEBUG_JACK_SYNC
 			fprintf(stdout, "->- %02i:%02i:%02i.%02i [%s] %lld\n",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type], tc.tme);
 #else
