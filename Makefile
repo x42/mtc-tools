@@ -15,13 +15,22 @@ endif
 CFLAGS+=`pkg-config --cflags jack timecode` -DVERSION=\"$(VERSION)\"
 LOADLIBES=`pkg-config --libs jack timecode` -lm
 
-all: jmtcgen jmtcdump
+MTCLTC=
+ifeq ($(shell pkg-config --exists ltc && echo yes), yes)
+  MTCLTC=jmltcdebug
+  CFLAGS+=`pkg-config --cflags ltc`
+  LOADLIBES+=`pkg-config --libs ltc` -lm
+endif
+
+all: jmtcgen jmtcdump $(MTCLTC)
 
 man: jmtcgen.1 jmtcdump.1
 
 jmtcdump: jmtcdump.c
 
 jmtcgen: jmtcgen.c
+
+jmltcdebug: jmltcdebug.c
 
 clean:
 	rm -f jmtcgen jmtcdump
