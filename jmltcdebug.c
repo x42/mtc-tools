@@ -60,10 +60,15 @@ typedef struct {
 	unsigned long long int tme;
 } timecode;
 
+typedef struct {
+	timecode tc;
+	int full_tc;
+	int have_first_full;
+} MTCtc;
+
 /* global Vars */
-static timecode tc;
-static int full_tc = 0;
-static int have_first_full = 0;
+static MTCtc *mtctimecode = NULL;
+static MTCtc *mtctimecode2 = NULL;
 
 static LTCDecoder *decoder = NULL;
 static LTCDecoder *decoder2 = NULL;
@@ -99,35 +104,35 @@ static int fps_den = 1;
  * parse MTC message data
  */
 
-#define SE(ARG) tc.tick=ARG; full_tc|=1<<(ARG);
+#define SE(ARG) mtc->tc.tick=ARG; mtc->full_tc|=1<<(ARG);
 #define SL(ARG) ARG = ( ARG &(~0xf)) | (data&0xf);
 #define SH(ARG) ARG = ( ARG &(~0xf0)) | ((data&0xf)<<4);
 
-static int parse_timecode( int data) {
+static int parse_timecode(MTCtc *mtc, int data) {
 	int rv = 0;
 	switch (data>>4) {
 		case 0x0: // #0000 frame LSN
-			SE(1); SL(tc.frame); break;
+			SE(1); SL(mtc->tc.frame); break;
 		case 0x1: // #0001 frame MSN
-			SE(2); SH(tc.frame); break;
+			SE(2); SH(mtc->tc.frame); break;
 		case 0x2: // #0010 sec LSN
-			SE(3); SL(tc.sec); break;
+			SE(3); SL(mtc->tc.sec); break;
 		case 0x3: // #0011 sec MSN
-			SE(4); SH(tc.sec); break;
+			SE(4); SH(mtc->tc.sec); break;
 		case 0x4: // #0100 min LSN
-			SE(5); SL(tc.min); break;
+			SE(5); SL(mtc->tc.min); break;
 		case 0x5: // #0101 min MSN
-			SE(6); SH(tc.min); break;
+			SE(6); SH(mtc->tc.min); break;
 		case 0x6: // #0110 hour LSN
-			SE(7); SL(tc.hour); break;
+			SE(7); SL(mtc->tc.hour); break;
 		case 0x7: // #0111 hour MSN and type
-			SE(0);tc.hour= (tc.hour&(~0xf0)) | ((data&1)<<4);
-			tc.type = (data>>1)&3;
-			if (full_tc!=0xff) break;
+			SE(0);mtc->tc.hour= (mtc->tc.hour&(~0xf0)) | ((data&1)<<4);
+			mtc->tc.type = (data>>1)&3;
+			if (mtc->full_tc!=0xff) break;
 #if 0
-			printf("->- %02i:%02i:%02i.%02i[%s]\n",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type]);
+			printf("->- %02i:%02i:%02i.%02i[%s]\n",mtc->tc.hour,mtc->tc.min,mtc->tc.sec,mtc->tc.frame,MTCTYPE[mtc->tc.type]);
 #endif
-			full_tc = 0; rv = 1; have_first_full = 1;
+			mtc->full_tc = 0; rv = 1; mtc->have_first_full = 1;
 		default:
 			;
 	}
@@ -163,7 +168,8 @@ static void dequeue_ltc(LTCDecoder *d, int id) {
  */
 
 jack_client_t *j_client = NULL;
-jack_port_t   *mtc_input_port;
+jack_port_t   *mtc_input_port1;
+jack_port_t   *mtc_input_port2;
 jack_port_t   *ltc_input_port1;
 jack_port_t   *ltc_input_port2;
 
@@ -174,18 +180,18 @@ static volatile unsigned long long monotonic_cnt = 0;
 static jack_nframes_t j_latency1 = 0;
 static jack_nframes_t j_latency2 = 0;
 
-static void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt) {
+static void process_jmidi_event(MTCtc *mtc, jack_midi_event_t *ev, unsigned long long mfcnt) {
 	if (ev->size==2 && ev->buffer[0] == 0xf1) {
 #if 0 // DEBUG quarter-frames
 		printf("QF: %d [%02x %02x ] @%lld dt:%lld\n",
-				tc.tick, ev->buffer[0], ev->buffer[1],
+				mtc->tc.tick, ev->buffer[0], ev->buffer[1],
 				mfcnt + ev->time, mfcnt + ev->time - qf_tme);
 #endif
-		if (parse_timecode(ev->buffer[1])) {
+		if (parse_timecode(mtc, ev->buffer[1])) {
 #if 0 // Warn large delta
 			long ffdiff = mfcnt + ev->time - ff_tme;
-			long expect = (long) rint(j_samplerate * 2.0 / expected_tme[tc.type]);
-			if (have_first_full) {
+			long expect = (long) rint(j_samplerate * 2.0 / expected_tme[mtc->tc.type]);
+			if (mtc->have_first_full) {
 				printf("->- 8qf delta-time: expected %ld - have %ld %s\n",
 						expect, ffdiff,
 						(abs(ffdiff - expect) > 20.0)?"!!!!!!!!!!!!!":""
@@ -193,15 +199,15 @@ static void process_jmidi_event(jack_midi_event_t *ev, unsigned long long mfcnt)
 			}
 #endif
 			ff_tme = mfcnt + ev->time;
-			tc.tme = ff_tme - rint(j_samplerate / expected_tme[tc.type] * 7.0 / 4.0); // 7 quarter-frames
+			mtc->tc.tme = ff_tme - rint(j_samplerate / expected_tme[mtc->tc.type] * 7.0 / 4.0); // 7 quarter-frames
 #ifdef DEBUG_JACK_SYNC
-			fprintf(stdout, "->- %02i:%02i:%02i.%02i [%s] %lld",tc.hour,tc.min,tc.sec,tc.frame,MTCTYPE[tc.type], tc.tme);
+			fprintf(stdout, "->- %02i:%02i:%02i.%02i [%s] %lld",mtc->tc.hour,mtc->tc.min,mtc->tc.sec,mtc->tc.frame,MTCTYPE[mtc->tc.type], mtc->tc.tme);
 			TimecodeTime tj;
-			timecode_sample_to_time(&tj, mtctc[tc.type], j_samplerate, tc.tme);
+			timecode_sample_to_time(&tj, mtctc[mtc->tc.type], j_samplerate, mtc->tc.tme);
 			fprintf(stdout, " == %02i:%02i:%02i.%02i.%03d\n",tj.hour,tj.minute,tj.second,tj.frame, tj.subframe);
 #else
 			if (jack_ringbuffer_write_space(rb) >= sizeof(timecode)) {
-				jack_ringbuffer_write(rb, (void *) &tc, sizeof(timecode));
+				jack_ringbuffer_write(rb, (void *) &mtc->tc, sizeof(timecode));
 			}
 
 			if (pthread_mutex_trylock (&msg_thread_lock) == 0) {
@@ -229,7 +235,7 @@ static int parse_ltc(LTCDecoder *d, jack_nframes_t nframes, jack_default_audio_s
 
 static int process(jack_nframes_t nframes, void *arg) {
 	jack_default_audio_sample_t *in;
-	void *jack_midi_buf = jack_port_get_buffer(mtc_input_port, nframes);
+	void *jack_midi_buf = jack_port_get_buffer(mtc_input_port1, nframes);
 	int nevents = jack_midi_get_event_count(jack_midi_buf);
 	int n;
 
@@ -253,11 +259,21 @@ static int process(jack_nframes_t nframes, void *arg) {
 		jack_midi_event_t ev;
 		jack_midi_event_get(&ev, jack_midi_buf, n);
 #ifdef DEBUG_JACK_SYNC
-		process_jmidi_event(&ev, pos.frame);
+		process_jmidi_event(mtctimecode, &ev, pos.frame);
 #else
-		process_jmidi_event(&ev, monotonic_cnt);
+		process_jmidi_event(mtctimecode, &ev, monotonic_cnt);
 #endif
 	}
+
+#ifndef DEBUG_JACK_SYNC
+	jack_midi_buf = jack_port_get_buffer(mtc_input_port2, nframes);
+	nevents = jack_midi_get_event_count(jack_midi_buf);
+	for (n=0; n<nevents; n++) {
+		jack_midi_event_t ev;
+		jack_midi_event_get(&ev, jack_midi_buf, n);
+		process_jmidi_event(mtctimecode2, &ev, monotonic_cnt);
+	}
+#endif
 	monotonic_cnt += nframes;
 	return 0;
 }
@@ -272,7 +288,7 @@ int jack_latency_cb(void *arg) {
   if (ltc_input_port2) {
 		jack_port_get_latency_range(ltc_input_port2, JackCaptureLatency, &jlty);
 		j_latency2 = jlty.max;
-		printf("# LTC1 port latency: %d\n", j_latency2);
+		printf("# LTC2 port latency: %d\n", j_latency2);
 	}
   return 0;
 }
@@ -293,6 +309,8 @@ void cleanup(void) {
 	}
   ltc_decoder_free(decoder);
   ltc_decoder_free(decoder2);
+	free(mtctimecode);
+	free(mtctimecode2);
 	j_client = NULL;
 }
 
@@ -329,7 +347,11 @@ static int init_jack(const char *client_name) {
 }
 
 static int jack_portsetup(void) {
-	if ((mtc_input_port = jack_port_register(j_client, "mtc_in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0)) == 0) {
+	if ((mtc_input_port1 = jack_port_register(j_client, "mtc_in", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0)) == 0) {
+		fprintf (stderr, "cannot register mtc input port !\n");
+		return (-1);
+	}
+	if ((mtc_input_port2 = jack_port_register(j_client, "mtc_in2", JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0)) == 0) {
 		fprintf (stderr, "cannot register mtc input port !\n");
 		return (-1);
 	}
@@ -343,18 +365,16 @@ static int jack_portsetup(void) {
 	}
   decoder = ltc_decoder_create(j_samplerate * fps_den / fps_num, LTC_QUEUE_LEN);
   decoder2 = ltc_decoder_create(j_samplerate * fps_den / fps_num, LTC_QUEUE_LEN);
+	mtctimecode = calloc(1, sizeof(MTCtc));
+	mtctimecode->tc.ltcid = -1;
+	mtctimecode2 = calloc(1, sizeof(MTCtc));
+	mtctimecode2->tc.ltcid = -2;
 	return (0);
 }
 
-static void mtc_port_connect(char *mtc_port) {
-	if (mtc_port && jack_connect(j_client, mtc_port, jack_port_name(mtc_input_port))) {
-		fprintf(stderr, "cannot connect port %s to %s\n", mtc_port, jack_port_name(mtc_input_port));
-	}
-}
-
-static void ltc_port_connect(char *ltc_port, jack_port_t *p) {
-	if (ltc_port && jack_connect(j_client, ltc_port, jack_port_name(p))) {
-		fprintf(stderr, "cannot connect port %s to %s\n", ltc_port, jack_port_name(p));
+static void my_port_connect(char *port, jack_port_t *p) {
+	if (port && jack_connect(j_client, port, jack_port_name(p))) {
+		fprintf(stderr, "cannot connect port %s to %s\n", port, jack_port_name(p));
 	}
 }
 
@@ -432,8 +452,6 @@ int main (int argc, char ** argv) {
 	if (jack_portsetup())
 		goto out;
 
-	memset(&tc, 0, sizeof(timecode));
-	tc.ltcid = -1;
 	rb = jack_ringbuffer_create(RBSIZE * sizeof(timecode));
 
 	if (mlockall (MCL_CURRENT | MCL_FUTURE)) {
@@ -448,11 +466,13 @@ int main (int argc, char ** argv) {
 	}
 
 	while (optind < argc) {
-		mtc_port_connect(argv[optind++]);
+		my_port_connect(argv[optind++], mtc_input_port1);
 		if (optind < argc)
-			ltc_port_connect(argv[optind++], ltc_input_port1);
+			my_port_connect(argv[optind++], mtc_input_port2);
 		if (optind < argc)
-			ltc_port_connect(argv[optind++], ltc_input_port2);
+			my_port_connect(argv[optind++], ltc_input_port1);
+		if (optind < argc)
+			my_port_connect(argv[optind++], ltc_input_port2);
 	}
 
 #ifndef _WIN32
