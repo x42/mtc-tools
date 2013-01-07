@@ -46,7 +46,7 @@
 #include <timecode/timecode.h>
 #define LTC_QUEUE_LEN (42)
 
-#define RBSIZE (20)
+#define RBSIZE (80)
 
 typedef struct {
 	int ltcid;
@@ -461,8 +461,7 @@ int main (int argc, char ** argv) {
 
 	pthread_mutex_lock (&msg_thread_lock);
 	while (run && j_client) {
-		int avail_tc = jack_ringbuffer_read_space (rb) / sizeof(timecode);
-		if (avail_tc > 0) {
+		while ((jack_ringbuffer_read_space (rb) / sizeof(timecode)) > 0) {
 			timecode t;
 			jack_ringbuffer_read(rb, (char*) &t, sizeof(timecode));
 			if (t.ltcid<0)
