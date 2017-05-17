@@ -87,12 +87,7 @@ const double expected_tme[4] = {
 	24, 25, 30000.0/1001.0, 30
 };
 
-const TimecodeRate *mtctc[4] = {
-	TCFPS24,
-	TCFPS25,
-	TCFPS2997DF,
-	TCFPS30
-};
+static TimecodeRate const* mtctc[4];
 
 /* options */
 char newline = '\r'; // or '\n';
@@ -445,6 +440,11 @@ void wearedone(int sig) {
 }
 
 int main (int argc, char ** argv) {
+	mtctc[0] = timecode_FPS24;
+	mtctc[1] = timecode_FPS25;
+	mtctc[2] = timecode_FPS2997DF;
+	mtctc[3] = timecode_FPS30;
+
 	decode_switches (argc, argv);
 
 	if (init_jack("jmtcdump"))
