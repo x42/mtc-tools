@@ -12,7 +12,7 @@ ifeq ($(shell pkg-config --exists timecode || echo no), no)
   $(error "libtimcode is required - install https://github.com/x42/libtimecode")
 endif
 
-CFLAGS+=`pkg-config --cflags jack timecode` -DVERSION=\"$(VERSION)\"
+CFLAGS+=`pkg-config --cflags jack timecode` -DVERSION=\"$(VERSION)\" -pthread
 LOADLIBES=`pkg-config --libs jack timecode` -lm
 
 MTCLTC=
