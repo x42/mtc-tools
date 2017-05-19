@@ -8,7 +8,7 @@ VERSION=0.1.0
 ifeq ($(shell pkg-config --exists jack || echo no), no)
   $(error "http://jackaudio.org is required - install libjack-dev or libjack-jackd2-dev")
 endif
-ifeq ($(shell pkg-config --exists timecode || echo no), no)
+ifeq ($(shell pkg-config --atleast-version=0.1.0 timecode || echo no), no)
   $(error "libtimcode is required - install https://github.com/x42/libtimecode")
 endif
 
