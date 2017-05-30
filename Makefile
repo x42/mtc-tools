@@ -4,25 +4,34 @@ mandir = $(PREFIX)/share/man/man1
 CFLAGS ?= -Wall -g -O2
 
 VERSION=0.1.0
+targets= jmtcdump
 
 ifeq ($(shell pkg-config --exists jack || echo no), no)
   $(error "http://jackaudio.org is required - install libjack-dev or libjack-jackd2-dev")
 endif
+
 ifeq ($(shell pkg-config --atleast-version=0.1.0 timecode || echo no), no)
-  $(error "libtimcode is required - install https://github.com/x42/libtimecode")
+  $(warning "MTC generator needs libtimcode >= 0.1.0 -- https://github.com/x42/libtimecode")
+  $(warning "jmtcgen will not be built")
+else
+  targets+= jmtcgen
+  CFLAGS+=`pkg-config --cflags timecode`
+  LOADLIBES+=`pkg-config --libs timecode`
 endif
 
-CFLAGS+=`pkg-config --cflags jack timecode` -DVERSION=\"$(VERSION)\" -pthread
-LOADLIBES=`pkg-config --libs jack timecode` -lm
-
-MTCLTC=
-ifeq ($(shell pkg-config --exists ltc && echo yes), yes)
-  MTCLTC=jmltcdebug
+ifeq ($(shell pkg-config --exists ltc || echo no), no)
+  $(warning "MTC/LTC sync-test tool needs libtltc -- https://github.com/x42/libltc")
+  $(warning "jmltcdebug will not be built")
+else
+  targets += jmltcdebug
   CFLAGS+=`pkg-config --cflags ltc`
   LOADLIBES+=`pkg-config --libs ltc` -lm
 endif
 
-all: jmtcgen jmtcdump $(MTCLTC)
+CFLAGS+=`pkg-config --cflags jack` -DVERSION=\"$(VERSION)\" -pthread
+LOADLIBES+=`pkg-config --libs jack` -lm
+
+all: $(targets)
 
 man: jmtcgen.1 jmtcdump.1
 
@@ -33,7 +42,7 @@ jmtcgen: jmtcgen.c
 jmltcdebug: jmltcdebug.c
 
 clean:
-	rm -f jmtcgen jmtcdump
+	rm -f jmtcgen jmtcdump jmltcdebug
 
 jmtcgen.1: jmtcgen
 	help2man -N -n 'JACK Transport to MTC' -o jmtcgen.1 ./jmtcgen
