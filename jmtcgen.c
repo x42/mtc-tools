@@ -49,7 +49,7 @@ static jack_client_t *j_client = NULL;
 static jack_nframes_t jmtc_latency = 0;
 static uint32_t j_samplerate = 48000;
 static volatile long long int monotonic_fcnt = 0;
-static int decodeahead = 2;
+static int writeahead = 1;
 
 static jack_ringbuffer_t *rb = NULL;
 static pthread_mutex_t msg_thread_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -232,16 +232,17 @@ static void queue_mtc_sysex(const TimecodeTime * const t, const int mtc_tc, cons
 /**
  *
  */
-static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode) {
+static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode, int num) {
 
   static TimecodeTime stime;
   static unsigned long long int pfcnt;
   static int pmode = -1;
 
+  unsigned long long int cfcnt = mfcnt - t->subframe;
+  t->subframe = 0;
   const double fptcf = timecode_frames_per_timecode_frame(&framerate, j_samplerate);
   const int64_t nfn =  timecode_to_framenumber(t, &framerate);
   int64_t ofn =  timecode_to_framenumber(&stime, &framerate);
-  unsigned long long int cfcnt = mfcnt - t->subframe;
 
   if (pmode == mode && mode == 0 && ofn == nfn) {
     /* we already sent this frame */
@@ -264,7 +265,7 @@ static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode
   pfcnt = mfcnt;
   pmode = mode;
 
-  if (mode == 2 && nfn + decodeahead <= ofn) {
+  if (mode == 2 && nfn + num <= ofn) {
     return;
   }
 
@@ -326,7 +327,7 @@ static void generate_mtc(TimecodeTime *t, unsigned long long int mfcnt, int mode
       cfcnt += fptcf;
       ofn = timecode_to_framenumber(&stime, &framerate);
     }
-  } while (mode == 2 && ofn < nfn + decodeahead);
+  } while (mode == 2 && ofn < nfn + num);
 }
 
 /**
@@ -367,7 +368,7 @@ int process (jack_nframes_t nframes, void *arg) {
       // TODO use timecode_strftimecode()
       rbprintf("FPS changed to %.2f%s\n", timecode_rate_to_double(&framerate), framerate.drop?"df":"");
       framerate.subframes = timecode_frames_per_timecode_frame(&framerate, j_samplerate);
-      decodeahead = 2 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
+      writeahead = 1 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
     }
   }
 
@@ -381,21 +382,23 @@ int process (jack_nframes_t nframes, void *arg) {
 
   timecode_sample_to_time(&t, &framerate, pos.frame_rate, sample_pos);
 
+  const int ea = ceil(nframes / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
+
   switch (state) {
     case JackTransportStopped:
       //send sysex-MTC message - if changed
-      generate_mtc(&t, monotonic_fcnt, 0);
+      generate_mtc(&t, monotonic_fcnt, 0, writeahead + ea);
       break;
     case JackTransportStarting:
 #if 0 // jack2 only
     case JackTransportNetStarting:
 #endif
       //send sysex-MTC message
-      generate_mtc(&t, monotonic_fcnt, 1);
+      generate_mtc(&t, monotonic_fcnt, 1, writeahead + ea);
       break;
     case JackTransportRolling:
       // enqueue quarter-frame MTC messages
-      generate_mtc(&t, monotonic_fcnt, 2);
+      generate_mtc(&t, monotonic_fcnt, 2, writeahead + ea);
       break;
     default: /* old JackTransportLooping */
       break;
@@ -415,7 +418,7 @@ int process (jack_nframes_t nframes, void *arg) {
       break;
     }
     if (mt < monotonic_fcnt) {
-      if (debug) rbprintf("WARNING: MTC was for previous jack cycle (port latency too large?)\n");
+      if (debug) rbprintf("WARNING: MTC was for previous jack cycle (port latency too large?) %lld\n", mt - monotonic_fcnt);
       //fprintf(stderr, "TME: %lld < %lld)\n", mt, monotonic_fcnt); // XXX
     } else {
 
@@ -478,7 +481,7 @@ void jack_latency_cb(jack_latency_callback_mode_t mode, void *arg) {
     range.min = range.max = jmtc_latency;
     jack_port_set_latency_range(mtc_output_port, JackPlaybackLatency, &range);
   }
-  decodeahead = 2 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
+  writeahead = 1 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
 }
 #endif
 
@@ -489,7 +492,7 @@ int jack_graph_cb(void *arg) {
     if (debug && !arg)
       rbprintf("MTC port latency: %d\n", jmtc_latency);
   }
-  decodeahead = 2 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
+  writeahead = 1 + ceil((double)jmtc_latency / timecode_frames_per_timecode_frame(&framerate, j_samplerate));
   return 0;
 }
 
